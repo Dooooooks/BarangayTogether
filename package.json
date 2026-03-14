@@ -1,0 +1,12 @@
+{
+  "name": "php-tailwind-starter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tailwindcss -c tailwind.config.js -i ./src/styles/tailwind.css -o ./public/assets/app.css --minify",
+    "dev": "tailwindcss -c tailwind.config.js -i ./src/styles/tailwind.css -o ./public/assets/app.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

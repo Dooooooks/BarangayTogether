@@ -14,6 +14,8 @@ function layout_header(string $title, string $active = ''): void {
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title><?= e($title) ?></title>
+      <link rel="icon" type="image/png" href="/icon/Icon.png" />
+      <link rel="apple-touch-icon" href="/icon/Icon.png" />
       <link rel="stylesheet" href="/assets/app.css" />
     </head>
     <body class="min-h-dvh bg-slate-50 text-slate-900">

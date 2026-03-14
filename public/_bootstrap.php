@@ -6,7 +6,7 @@ declare(strict_types=1);
 ini_set('display_errors', '0');
 error_reporting(E_ALL);
 
-session_start();
+// Note: avoid PHP server sessions for serverless deployments (e.g., Vercel).
 
 function env_load(string $path): void {
   if (!is_file($path)) return;
@@ -37,36 +37,78 @@ function redirect(string $to): never {
   exit;
 }
 
+function is_https_request(): bool {
+  $xfp = strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
+  if ($xfp === 'https') return true;
+  $https = strtolower((string)($_SERVER['HTTPS'] ?? ''));
+  return $https !== '' && $https !== 'off' && $https !== '0';
+}
+
+function cookie_get(string $name): ?string {
+  $v = $_COOKIE[$name] ?? null;
+  return is_string($v) && $v !== '' ? $v : null;
+}
+
+function cookie_set(string $name, string $value, int $maxAgeSeconds, bool $httpOnly = true, string $sameSite = 'Lax'): void {
+  $secure = is_https_request();
+  setcookie($name, $value, [
+    'expires' => time() + max(0, $maxAgeSeconds),
+    'path' => '/',
+    'secure' => $secure,
+    'httponly' => $httpOnly,
+    'samesite' => $sameSite,
+  ]);
+
+  // Keep runtime access consistent for this request.
+  $_COOKIE[$name] = $value;
+}
+
+function cookie_del(string $name): void {
+  $secure = is_https_request();
+  setcookie($name, '', [
+    'expires' => 1,
+    'path' => '/',
+    'secure' => $secure,
+    'httponly' => true,
+    'samesite' => 'Lax',
+  ]);
+  unset($_COOKIE[$name]);
+}
+
 function app_base_url(): string {
   $cfg = (string)config('APP_URL', '');
   if ($cfg !== '') return rtrim($cfg, '/');
 
-  $https = (string)($_SERVER['HTTPS'] ?? '');
-  $scheme = ($https !== '' && $https !== 'off') ? 'https' : 'http';
+  $scheme = is_https_request() ? 'https' : 'http';
   $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost:8000');
   return $scheme . '://' . $host;
 }
 
 function flash_set(string $type, string $message): void {
-  $_SESSION['_flash'] = ['type' => $type, 'message' => $message];
+  cookie_set('flash', json_encode(['type' => $type, 'message' => $message]), 30, true, 'Lax');
 }
 
 function flash_get(): ?array {
-  $v = $_SESSION['_flash'] ?? null;
-  unset($_SESSION['_flash']);
+  $raw = cookie_get('flash');
+  if (!$raw) return null;
+  cookie_del('flash');
+  $v = json_decode($raw, true);
   return is_array($v) ? $v : null;
 }
 
 function csrf_token(): string {
-  if (!isset($_SESSION['_csrf'])) {
-    $_SESSION['_csrf'] = bin2hex(random_bytes(16));
-  }
-  return (string)$_SESSION['_csrf'];
+  $t = cookie_get('csrf_token');
+  if ($t) return $t;
+  $t = bin2hex(random_bytes(16));
+  // Not HttpOnly so it can be embedded into forms (server-side).
+  cookie_set('csrf_token', $t, 60 * 60 * 24, false, 'Lax');
+  return $t;
 }
 
 function csrf_verify(): void {
   $token = (string)($_POST['_csrf'] ?? '');
-  if ($token === '' || !hash_equals((string)($_SESSION['_csrf'] ?? ''), $token)) {
+  $cookieToken = (string)(cookie_get('csrf_token') ?? '');
+  if ($token === '' || $cookieToken === '' || !hash_equals($cookieToken, $token)) {
     http_response_code(400);
     echo 'Invalid CSRF token.';
     exit;
@@ -233,29 +275,38 @@ if ($SUPABASE_URL === '' || $SUPABASE_ANON_KEY === '') {
 }
 
 function session_access_token(): ?string {
-  $t = $_SESSION['sb_access_token'] ?? null;
-  return is_string($t) && $t !== '' ? $t : null;
+  return cookie_get('sb_access_token');
 }
 
 function session_refresh_token(): ?string {
-  $t = $_SESSION['sb_refresh_token'] ?? null;
-  return is_string($t) && $t !== '' ? $t : null;
+  return cookie_get('sb_refresh_token');
 }
 
 function session_expires_at(): int {
-  $v = $_SESSION['sb_expires_at'] ?? 0;
-  return is_int($v) ? $v : 0;
+  $v = cookie_get('sb_expires_at');
+  if (!$v) return 0;
+  return ctype_digit($v) ? (int)$v : 0;
 }
 
 function auth_store_session(array $tokenResponse): void {
-  $_SESSION['sb_access_token'] = (string)($tokenResponse['access_token'] ?? '');
-  $_SESSION['sb_refresh_token'] = (string)($tokenResponse['refresh_token'] ?? '');
+  $access = (string)($tokenResponse['access_token'] ?? '');
+  $refresh = (string)($tokenResponse['refresh_token'] ?? '');
   $expiresIn = (int)($tokenResponse['expires_in'] ?? 0);
-  $_SESSION['sb_expires_at'] = time() + max(0, $expiresIn);
+  $expiresAt = time() + max(0, $expiresIn);
+
+  // Persist refresh token longer so serverless instances remain stateless.
+  $refreshTtl = 60 * 60 * 24 * 30;
+  $accessTtl = max(60, min($refreshTtl, $expiresAt - time()));
+
+  cookie_set('sb_access_token', $access, $accessTtl, true, 'Lax');
+  cookie_set('sb_refresh_token', $refresh, $refreshTtl, true, 'Lax');
+  cookie_set('sb_expires_at', (string)$expiresAt, $refreshTtl, true, 'Lax');
 }
 
 function auth_clear_session(): void {
-  unset($_SESSION['sb_access_token'], $_SESSION['sb_refresh_token'], $_SESSION['sb_expires_at']);
+  cookie_del('sb_access_token');
+  cookie_del('sb_refresh_token');
+  cookie_del('sb_expires_at');
 }
 
 function auth_maybe_refresh(): void {
